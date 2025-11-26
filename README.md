@@ -1,6 +1,8 @@
 # Eclipse JDT over Javac
 
-This fragment contains a Javac backend (instead of ECJ) for JDT features:
+This repository contains support ot use Javac backend (instead of ECJ) for JDT features:
+
+It features Javac-based:
 * error reporting/reconciling
 * build/compilation
 * indexing
@@ -30,11 +32,25 @@ Note that some required feature switches are not yet available in upstream JDT (
 
 ## ⌨️ Development
 
+### 🔛 Enable in your Eclipse-based application
+
+There are several ways to achieve that:
+
+* If your installation relies on **p2**, installing `org.eclipse.jdt.core.javac` should set the VM configuration and system properties
+* If any Eclipse-based installation, having `org.eclipse.jdt.core.javac` and `org.eclipse.jdt.core.javac.configurator` available, and the later using
+**autoStart and startLevel=3** would allow to use a preference to control the enablement of system properties on startup (setting the `--add-opens ...` is still
+necessary on startup command-line or configuration such as eclipse.ini though). The preference value can them be set as usual, for example via some
+`plugin_customization.ini`.
+* More manually, you need to set the same VM args as seen in https://github.com/eclipse-jdtls/eclipse.jdt.javac/blob/main/org.eclipse.jdt.core.javac/META-INF/p2.inf or,
+if using the configurator bundle at the right level, set only the `--add-opens ...` and let the configurator set other properties on early startup:
+https://github.com/eclipse-jdtls/eclipse.jdt.javac/blob/main/org.eclipse.jdt.core.javac.configurator/src/org/eclipse/jdt/core/javac/configurator/JavacConfigurationActivator.java#L36
+
+
 ### ⌨️ Contribute
 
 From a PDE-able IDE using a target platform that is suitable for JDT development (usually default case).
 
-You'll need to import the code of `org.eclipse.jdt.core` and `org.eclipse.jdt.core.javac` from this branch in your Eclipse workspace; and create a Launch Configuration of type "Eclipse Application" which does include the `org.eclipse.jdt.core` bundle. Go to _Arguments_ tab of this launch configuration, and add the following content to the _VM arguments_ list:
+You'll need to import the code of `org.eclipse.jdt.core.javac` from this branch in your Eclipse workspace; and create a Launch Configuration of type "Eclipse Application" which does include the `org.eclipse.jdt.core` bundle. Go to _Arguments_ tab of this launch configuration, and add the following content to the _VM arguments_ list:
 
 ```
 -DCompilationUnit.DOM_BASED_OPERATIONS=true -DICompletionProvider=org.eclipse.jdt.core.dom.DOMCompletionProvider -DSourceIndexer.DOM_BASED_INDEXER=true -DICompilationUnitResolver=org.eclipse.jdt.core.dom.JavacCompilationUnitResolver -DAbstractImageBuilder.compilerFactory=org.eclipse.jdt.internal.javac.JavacCompilerFactory --add-opens jdk.compiler/com.sun.tools.javac.main=ALL-UNNAMED --add-opens jdk.compiler/com.sun.tools.javac.util=ALL-UNNAMED --add-opens jdk.compiler/com.sun.tools.javac.tree=ALL-UNNAMED --add-opens jdk.compiler/com.sun.tools.javac.api=ALL-UNNAMED --add-opens jdk.compiler/com.sun.tools.javac.file=ALL-UNNAMED --add-opens jdk.compiler/com.sun.tools.javac.parser=ALL-UNNAMED --add-opens jdk.compiler/com.sun.tools.javac.comp=ALL-UNNAMED --add-opens jdk.compiler/com.sun.tools.javac.code=ALL-UNNAMED --add-opens jdk.compiler/com.sun.tools.javac.processing=ALL-UNNAMED --add-opens jdk.compiler/com.sun.tools.javac.jvm=ALL-UNNAMED --add-opens jdk.compiler/com.sun.tools.javac.model=ALL-UNNAMED --add-opens jdk.compiler/com.sun.tools.javac.platform=ALL-UNNAMED --add-opens jdk.compiler/com.sun.tools.javac.platform=ALL-UNNAMED --add-opens jdk.compiler/com.sun.tools.javac.resources=ALL-UNNAMED --add-opens jdk.zipfs/jdk.nio.zipfs=ALL-UNNAMED --add-opens java.compiler/javax.tools=ALL-UNNAMED --add-opens java.base/sun.nio.ch=ALL-UNNAMED
