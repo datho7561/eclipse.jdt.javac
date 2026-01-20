@@ -1005,7 +1005,16 @@ public class JavacProblemConverter {
 				}
 			}
 			case "compiler.err.non.sealed.sealed.or.final.expected" -> IProblem.SealedMissingClassModifier;
-			case "compiler.err.enum.annotation.must.be.enum.constant" -> IProblem.AnnotationValueMustBeAnEnumConstant;
+			case "compiler.err.enum.annotation.must.be.enum.constant" -> {
+				if (!(diagnostic instanceof JCDiagnostic jcDiagnostic)) {
+					yield -1;
+				}
+				DiagnosticPosition pos = jcDiagnostic.getDiagnosticPosition();
+				if (pos instanceof JCTree.JCFieldAccess fieldAccess && fieldAccess.type.isErroneous()) {
+					yield -1;
+				}
+				yield IProblem.AnnotationValueMustBeAnEnumConstant;
+			}
 			case "compiler.err.package.in.other.module" -> IProblem.ConflictingPackageFromOtherModules;
 			case "compiler.err.pkg.clashes.with.class.of.same.name" -> IProblem.PackageCollidesWithType;
 			case "compiler.err.module.decl.sb.in.module-info.java" -> {
