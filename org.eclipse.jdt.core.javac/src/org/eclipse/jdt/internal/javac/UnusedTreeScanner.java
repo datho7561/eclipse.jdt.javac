@@ -23,6 +23,7 @@ import java.util.Optional;
 import java.util.Set;
 
 import javax.lang.model.element.ElementKind;
+import javax.lang.model.element.TypeElement;
 
 import org.eclipse.jdt.core.compiler.CategorizedProblem;
 import org.eclipse.jdt.internal.javac.problem.UnusedProblemFactory;
@@ -47,7 +48,6 @@ import com.sun.source.tree.TryTree;
 import com.sun.source.tree.TypeCastTree;
 import com.sun.source.tree.TypeParameterTree;
 import com.sun.source.tree.VariableTree;
-import com.sun.source.util.TreeScanner;
 import com.sun.tools.javac.code.Flags;
 import com.sun.tools.javac.code.Symbol;
 import com.sun.tools.javac.code.Symbol.ClassSymbol;
@@ -80,7 +80,7 @@ import com.sun.tools.javac.tree.JCTree.JCTypeCast;
 import com.sun.tools.javac.tree.JCTree.JCTypeParameter;
 import com.sun.tools.javac.tree.JCTree.JCVariableDecl;
 
-public class UnusedTreeScanner<R, P> extends TreeScanner<R, P> {
+public class UnusedTreeScanner<R, P> extends TopLevelTreeScanner<R, P> {
 	final Set<Tree> privateDecls = new LinkedHashSet<>();
 	final Set<Symbol> usedElements = new HashSet<>();
 	final Map<String, List<JCImport>> unusedImports = new LinkedHashMap<>();
@@ -100,6 +100,10 @@ public class UnusedTreeScanner<R, P> extends TreeScanner<R, P> {
 	private int callableDepth = 0;
 
 	private final UnusedDocTreeScanner unusedDocTreeScanner = new UnusedDocTreeScanner();
+
+	public UnusedTreeScanner(TypeElement currentTopLevelType) {
+		super(currentTopLevelType);
+	}
 
 	@Override
 	public R scan(Tree tree, P p) {
@@ -576,30 +580,29 @@ public class UnusedTreeScanner<R, P> extends TreeScanner<R, P> {
 				} else if (decl instanceof JCMethodDecl methodDecl && !this.usedElements.contains(methodDecl.sym)) {
 					unusedPrivateMembers.add(decl);
 				} else if (decl instanceof JCVariableDecl variableDecl
-						&& !this.usedElements.contains(variableDecl.sym)) {
-					boolean suppressed = false;
-					for (JCAnnotation annot : variableDecl.mods.annotations) {
-						suppressed = isUnusedSuppressed(annot);
-						break;
-					}
-					VarSymbol varSymbol = variableDecl.sym;
-					ElementKind varKind = varSymbol == null ? null : varSymbol.getKind();
-					if (varKind == ElementKind.FIELD) {
-						if( varSymbol.owner instanceof ClassSymbol css) {
-							String name = variableDecl.name.toString();
-							if( css.getRecordComponents().map(x -> x.toString()).contains(name)) {
-								suppressed = true;
-							}
-						}
-					}
-
-					if (!suppressed) {
-						unusedPrivateMembers.add(decl);
-					}
+						&& !this.usedElements.contains(variableDecl.sym)
+						&& isUnusedPrivateField(variableDecl)
+						&& !isUnusedVariableSuppressed(variableDecl)) {
+					unusedPrivateMembers.add(decl);
 				}
 			}
 		}
 		return problemFactory.addUnusedPrivateMembers(unit, unusedPrivateMembers);
+	}
+
+	public List<CategorizedProblem> getUnusedLocalVariables(UnusedProblemFactory problemFactory) {
+		List<JCVariableDecl> unusedVariables = new ArrayList<>();
+		if (!classSuppressUnused && !methodSuppressUnused) {
+			for (Tree decl : this.privateDecls) {
+				if (decl instanceof JCVariableDecl variableDecl
+						&& !this.usedElements.contains(variableDecl.sym)
+						&& !isUnusedPrivateField(variableDecl)
+						&& !isUnusedVariableSuppressed(variableDecl)) {
+					unusedVariables.add(variableDecl);
+				}
+			}
+		}
+		return problemFactory.addUnusedLocalVariables(unit, unusedVariables);
 	}
 
 	public List<CategorizedProblem> getUnusedTypeParameters(UnusedProblemFactory problemFactory) {
@@ -634,6 +637,27 @@ public class UnusedTreeScanner<R, P> extends TreeScanner<R, P> {
 						}
 					}
 				}
+			}
+		}
+		return suppressed;
+	}
+
+	private boolean isUnusedPrivateField(JCVariableDecl variableDecl) {
+		VarSymbol varSymbol = variableDecl.sym;
+		return varSymbol != null && varSymbol.getKind() == ElementKind.FIELD;
+	}
+
+	private boolean isUnusedVariableSuppressed(JCVariableDecl variableDecl) {
+		boolean suppressed = false;
+		for (JCAnnotation annot : variableDecl.mods.annotations) {
+			suppressed = isUnusedSuppressed(annot);
+			break;
+		}
+		VarSymbol varSymbol = variableDecl.sym;
+		if (!suppressed && isUnusedPrivateField(variableDecl) && varSymbol.owner instanceof ClassSymbol css) {
+			String name = variableDecl.name.toString();
+			if (css.getRecordComponents().map(x -> x.toString()).contains(name)) {
+				suppressed = true;
 			}
 		}
 		return suppressed;

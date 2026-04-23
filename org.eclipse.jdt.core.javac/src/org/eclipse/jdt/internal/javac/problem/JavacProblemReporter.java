@@ -4,7 +4,9 @@ import org.eclipse.jdt.core.compiler.IProblem;
 import org.eclipse.jdt.core.dom.IMethodBinding;
 import org.eclipse.jdt.core.dom.ITypeBinding;
 import org.eclipse.jdt.core.dom.MethodDeclaration;
+import org.eclipse.jdt.core.dom.SwitchStatement;
 import org.eclipse.jdt.core.dom.Type;
+import org.eclipse.jdt.core.dom.VariableDeclarationFragment;
 import org.eclipse.jdt.internal.compiler.IErrorHandlingPolicy;
 import org.eclipse.jdt.internal.compiler.IProblemFactory;
 import org.eclipse.jdt.internal.compiler.impl.CompilerOptions;
@@ -21,6 +23,20 @@ public class JavacProblemReporter extends ProblemHandler {
 		this.referenceContext = referenceContext;
 		this.severityUtility = new ProblemReporter(policy, options, problemFactory);
 	}
+
+	public void assignmentHasNoEffect(VariableDeclarationFragment frag, char[] name){
+		int severity = computeSeverity(IProblem.AssignmentHasNoEffect);
+		if (severity == ProblemSeverities.Ignore) return;
+		String[] arguments = new String[] { new String(name) };
+		this.handle(
+				IProblem.AssignmentHasNoEffect,
+				arguments,
+				arguments,
+				severity,
+				frag.getStartPosition(),
+				frag.getStartPosition() + frag.getLength());
+	}
+
 	public void redundantSpecificationOfTypeArguments(Type location, ITypeBinding[] argumentTypes) {
 		int severity = this.severityUtility.computeSeverity(IProblem.RedundantSpecificationOfTypeArguments);
 		if (severity != ProblemSeverities.Ignore) {
@@ -53,7 +69,7 @@ public class JavacProblemReporter extends ProblemHandler {
 			0,
 			new String[] { binding.getName(), typesAsString(binding, true),
 					binding.getDeclaringClass().getName(), },
-			severity, method.getName().getStartPosition(), method.getStartPosition() + method.getLength() - 1);
+			severity, method.getName().getStartPosition(), method.getName().getStartPosition() + method.getName().getLength() - 1);
 	}
 
 	public void missingOverrideAnnotationForInterfaceMethodImplementation(MethodDeclaration method) {
@@ -146,6 +162,25 @@ public class JavacProblemReporter extends ProblemHandler {
 		return buffer.toString();
 	}
 
+	public void missingEnumConstantInSwitch(SwitchStatement statement, String enumTypeName, String missingConstant) {
+	    int severity = this.severityUtility.computeSeverity(IProblem.MissingEnumConstantCase);
+	    if (severity == ProblemSeverities.Ignore) {
+	        return;
+	    }
+
+	    int sourceStart = statement.getExpression().getStartPosition();
+	    int sourceEnd = statement.getExpression().getStartPosition() + statement.getExpression().getLength() - 1;
+
+	    String[] arguments = new String[] { enumTypeName, missingConstant };
+
+	    this.handle(
+	            IProblem.MissingEnumConstantCase,
+	            arguments,
+	            arguments,
+	            severity,
+	            sourceStart,
+	            sourceEnd);
+	}
 
 
 	// use this private API when the compilation unit result can be found through the

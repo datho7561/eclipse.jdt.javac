@@ -44,6 +44,7 @@ import org.eclipse.jdt.internal.compiler.impl.CompilerOptions;
 import org.eclipse.jdt.internal.compiler.problem.DefaultProblemFactory;
 import org.eclipse.jdt.internal.compiler.problem.ProblemReporter;
 import org.eclipse.jdt.internal.compiler.problem.ProblemSeverities;
+import org.eclipse.jdt.internal.javac.JavacUtils;
 
 import com.sun.source.tree.AnnotationTree;
 import com.sun.source.tree.Tree;
@@ -98,6 +99,7 @@ public class JavacDiagnosticProblemConverter {
 	private static final String COMPILER_WARN_NON_SERIALIZABLE_INSTANCE_FIELD = "compiler.warn.non.serializable.instance.field";
 	private static final String COMPILER_WARN_MISSING_SVUID = "compiler.warn.missing.SVUID";
 	private static final Pattern SOURCE_VERSION_EXTRACTOR = Pattern.compile("--?source ([-0-9]+)");
+	private static final String COMPILER_ERR_TYPE_ANNOTATION_INADMISSIBLE = "compiler.err.type.annotation.inadmissible";
 	private final CompilerOptions compilerOptions;
 	private final Context context;
 	private final Map<JavaFileObject, JCCompilationUnit> units = new HashMap<>();
@@ -113,6 +115,9 @@ public class JavacDiagnosticProblemConverter {
 	}
 
 	public JavacProblem[] createJavacProblems(Diagnostic<? extends JavaFileObject> diagnostic) {
+		if (diagnostic instanceof JCDiagnostic jcDiagnostic && COMPILER_ERR_TYPE_ANNOTATION_INADMISSIBLE.equals(jcDiagnostic.getCode())) {
+			return createTypeAnnotationAtQualifiedNameProblems(jcDiagnostic);
+		}
 		if (diagnostic instanceof JCDiagnostic jcDiagnostic && COMPILER_ERR_DOES_NOT_OVERRIDE_ABSTRACT.equals(jcDiagnostic.getCode())) {
 			return createDoesNotOverrideAbstractProblems(jcDiagnostic);
 		}
@@ -123,17 +128,58 @@ public class JavacDiagnosticProblemConverter {
 				|| (nestedDiagnostic.getSource() == null && findSymbol(nestedDiagnostic) instanceof ClassSymbol classSymbol
 					&& classSymbol.sourcefile == diagnostic.getSource()));
 		Diagnostic<? extends JavaFileObject> selectedDiagnostic = useNestedDiagnostic ? nestedDiagnostic : diagnostic;
+		Diagnostic<? extends JavaFileObject> positionedDiagnostic = useNestedDiagnostic && selectedDiagnostic.getPosition() < 0
+				? diagnostic
+				: selectedDiagnostic;
 		int[] problemIds = toProblemIds(selectedDiagnostic);
 		List<JavacProblem> ret = new ArrayList<>();
 		for( int i = 0; i < problemIds.length; i++ ) {
 			if (problemIds[i] != -1) { // cannot use < 0 as IProblem.Javadoc < 0
-				JavacProblem p = problemIdToJavacProblem(problemIds[i], selectedDiagnostic);
+				JavacProblem p = problemIdToJavacProblem(problemIds[i], positionedDiagnostic);
 				if( p != null ) {
 					ret.add(p);
 				}
 			}
 		}
 		return (JavacProblem[]) ret.toArray(new JavacProblem[ret.size()]);
+	}
+	private JavacProblem[] createTypeAnnotationAtQualifiedNameProblems(JCDiagnostic diagnostic) {
+		TreePath path = getTreePath(diagnostic);
+		if (path != null
+				&& path.getParentPath() != null
+				&& path.getParentPath().getLeaf() instanceof JCVariableDecl varDecl
+				&& !varDecl.mods.annotations.isEmpty()) {
+
+			List<JavacProblem> problems = new ArrayList<>();
+			String[] arguments = getDiagnosticStringArguments(diagnostic);
+			int problemId = IProblem.TypeAnnotationAtQualifiedName;
+			int severity = toSeverity(problemId, diagnostic);
+			String problemMessage = getProblemMessage(diagnostic, problemId, arguments, null);
+
+			for (JCAnnotation annotation : varDecl.mods.annotations) {
+				int start = annotation.getStartPosition();
+				int end = start + Math.max(annotation.toString().length() - 1, 0);
+				int[] lineAndColumn = getProblemLineColumnFromOffset(diagnostic, start);
+				int line = lineAndColumn != null ? lineAndColumn[0] : (int) diagnostic.getLineNumber();
+				int column = lineAndColumn != null ? lineAndColumn[1] : (int) diagnostic.getColumnNumber();
+
+				problems.add(new JavacProblem(
+						diagnostic.getSource().getName().toCharArray(),
+						problemMessage,
+						diagnostic.getCode(),
+						problemId,
+						arguments,
+						severity,
+						start,
+						end,
+						line,
+						column));
+			}
+
+			return problems.toArray(new JavacProblem[0]);
+		}
+
+		return new JavacProblem[] { problemIdToJavacProblem(IProblem.TypeAnnotationAtQualifiedName, diagnostic) };
 	}
 
 	/**
@@ -475,6 +521,21 @@ public class JavacDiagnosticProblemConverter {
 			JCCompilationUnit unit = units.get(diagnostic.getSource());
 			EndPosTable endPos = unit != null ? unit.endPositions : null;
 			if (diagnosticPath != null) {
+				if (problemId == IProblem.NotVisibleType
+						&& diagnosticPath.getLeaf() instanceof JCFieldAccess fieldAccess) {
+					JCExpression receiver = fieldAccess.getExpression();
+					if (receiver instanceof JCMethodInvocation receiverInvocation) {
+						JCExpression select = receiverInvocation.getMethodSelect();
+						if (select instanceof JCIdent ident) {
+							return getPositionByNodeRangeOnly(jcDiagnostic, ident);
+						}
+						if (select instanceof JCFieldAccess access) {
+							return new org.eclipse.jface.text.Position(
+									access.getPreferredPosition() + 1,
+									access.getIdentifier().length());
+						}
+					}
+				}
 				if (problemId == IProblem.ParameterMismatch) {
 					// Javac points to the arg, which JDT expects the method name
 					diagnosticPath = diagnosticPath.getParentPath();
@@ -665,7 +726,7 @@ public class JavacDiagnosticProblemConverter {
 					case JCIdent jcIdent: return getPositionByNodeRangeOnly(jcDiagnostic, jcIdent);
 					case JCMethodInvocation methodInvocation: return getPositionByNodeRangeOnly(jcDiagnostic, methodInvocation);
 					case JCFieldAccess jcFieldAccess:
-						if (problemId == IProblem.NonStaticFieldFromStaticInvocation) {
+						if (problemId == IProblem.NonStaticFieldFromStaticInvocation || problemId == IProblem.UnsafeTypeConversion) {
 							int start = jcFieldAccess.getStartPosition();
 							int end = jcFieldAccess.getEndPosition(endPos);
 							return new org.eclipse.jface.text.Position(start, end - start);
@@ -952,12 +1013,9 @@ public class JavacDiagnosticProblemConverter {
 		if (name != null && !name.isEmpty()) {
 			String content = loadDocumentText(jcDiagnostic);
 			if (content != null && content.length() > startPosition) {
-				String temp = content.substring(startPosition);
-				int ind = temp.indexOf(name);
-				if (ind >= 0) {
-					int offset = startPosition + ind;
-					int length = name.length();
-					return new org.eclipse.jface.text.Position(offset, length);
+				int[] match = JavacUtils.findMatch(content, name, startPosition, content.length());
+				if (match != null) {
+					return new org.eclipse.jface.text.Position(match[0], match[1]);
 				}
 			}
 		}
@@ -1136,7 +1194,7 @@ public class JavacDiagnosticProblemConverter {
 			case "compiler.warn.underscore.as.identifier" -> IProblem.IllegalUseOfUnderscoreAsAnIdentifier;
 			case "compiler.err.var.might.not.have.been.initialized" -> {
 				VarSymbol symbol = getDiagnosticArgumentByType(diagnostic, VarSymbol.class);
-				yield symbol.owner instanceof ClassSymbol ?
+				yield symbol != null && symbol.owner instanceof ClassSymbol ?
 						IProblem.UninitializedBlankFinalField :
 						IProblem.UninitializedLocalVariable;
 			}
@@ -1246,7 +1304,7 @@ public class JavacDiagnosticProblemConverter {
 			case "compiler.warn.prob.found.req" ->
 				diagnostic.getMessage(Locale.ENGLISH).split("\n")[0].contains("cast") ?
 						IProblem.UnsafeGenericCast :
-						IProblem.UncheckedAccessOfValueOfFreeTypeVariable;
+						IProblem.UnsafeTypeConversion;
 			case "compiler.warn.restricted.type.not.allowed" -> IProblem.RestrictedTypeName;
 			case "compiler.err.override.weaker.access" -> IProblem.MethodReducesVisibility;
 			case "compiler.err.enum.constant.expected" -> IProblem.Syntax;
@@ -1426,7 +1484,7 @@ public class JavacDiagnosticProblemConverter {
 			case "compiler.err.enum.constant.not.expected" -> IProblem.UndefinedMethod;
 			case "compiler.warn.poor.choice.for.module.name" -> IProblem.ModuleRelated;
 			case "compiler.err.try.without.catch.finally.or.resource.decls" -> IProblem.Syntax;
-			case "compiler.warn.unchecked.meth.invocation.applied" -> IProblem.UnsafeTypeConversion;
+			case "compiler.warn.unchecked.meth.invocation.applied" -> IProblem.UnsafeRawGenericMethodInvocation; // not in ECJ
 			case "compiler.warn.override.unchecked.ret" -> IProblem.UnsafeReturnTypeOverride;
 			case "compiler.warn.override.varargs.missing" -> IProblem.VarargsConflict;
 			case "compiler.err.encl.class.required" -> IProblem.MissingEnclosingInstanceForConstructorCall;
@@ -1458,6 +1516,7 @@ public class JavacDiagnosticProblemConverter {
 				}
 				yield IProblem.DisallowedTargetForAnnotation;
 			}
+			case "compiler.err.type.annotation.inadmissible" -> IProblem.TypeAnnotationAtQualifiedName;
 			case "compiler.err.pkg.annotations.sb.in.package-info.java" -> IProblem.InvalidFileNameForPackageAnnotations;
 			case "compiler.err.unexpected.type" -> IProblem.TypeMismatch;
 			case "compiler.err.intf.annotation.members.cant.have.params" -> IProblem.AnnotationMembersCannotHaveParameters;
@@ -1496,6 +1555,7 @@ public class JavacDiagnosticProblemConverter {
 			case "compiler.note.deprecated.filename.additional" -> IProblem.UsingDeprecatedMethod;
 			case "compiler.warn.unreachable.catch" -> IProblem.UnreachableCatch;
 			case "compiler.note.deprecated.recompile" -> -1;
+			case "compiler.misc.doesnt.implement.sealed" -> IProblem.SealedNotDirectSuperInterface;
 			default -> {
 				ILog.get().error("Could not accurately convert diagnostic (" + diagnostic.getCode() + ")\n" + diagnostic);
 				if (diagnostic.getKind() == javax.tools.Diagnostic.Kind.ERROR && diagnostic.getCode().startsWith("compiler.err")) {
@@ -1832,8 +1892,19 @@ public class JavacDiagnosticProblemConverter {
 						while (treePath != null && !(treePath.getLeaf() instanceof JCMethodDecl)) {
 							treePath = treePath.getParentPath();
 						}
-						return treePath != null && treePath.getLeaf() instanceof JCMethodDecl methodDecl && (methodDecl.sym.flags() & Flags.GENERATEDCONSTR) != 0 ?
-							IProblem.NotVisibleConstructorInDefaultConstructor : IProblem.NotVisibleConstructor;
+						return treePath != null && treePath.getLeaf() instanceof JCMethodDecl methodDecl
+								&& (methodDecl.sym.flags() & Flags.GENERATEDCONSTR) != 0
+										? IProblem.NotVisibleConstructorInDefaultConstructor
+										: IProblem.NotVisibleConstructor;
+					}
+
+					if (methodSymbol.owner instanceof Symbol.ClassSymbol owner) {
+						boolean methodIsPublic = (methodSymbol.flags() & Flags.PUBLIC) != 0;
+						boolean ownerIsPublic = (owner.flags() & Flags.PUBLIC) != 0;
+
+						if (methodIsPublic && !ownerIsPublic) {
+							return IProblem.NotVisibleType;
+						}
 					}
 
 					return IProblem.NotVisibleMethod;

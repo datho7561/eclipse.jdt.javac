@@ -30,6 +30,7 @@ public class JavacCompilationResult extends CompilationResult {
 	private Set<String> javacRootReferences = new TreeSet<>();
 	private boolean isMigrated = false;
 	private List<CategorizedProblem> unusedMembers = null;
+	private List<CategorizedProblem> unusedLocalVariables = null;
 	private List<CategorizedProblem> unusedImports = null;
 	private List<CategorizedProblem> unnecessaryCasts = null;
 	private List<CategorizedProblem> noEffectAssignments = null;
@@ -38,6 +39,9 @@ public class JavacCompilationResult extends CompilationResult {
 	private List<CategorizedProblem> accessRestrictionProblems = null;
 	private List<CategorizedProblem> indirectStaticAccessProblems = null;
 	private List<CategorizedProblem> unqualifiedFieldAccessProblems = null;
+	private List<CategorizedProblem> deadCodeProblems = null;
+	private List<CategorizedProblem> redundantNullAnnotationProblems = null;
+	private List<CategorizedProblem> potentialNullReferenceProblems = null;
 
 	public JavacCompilationResult(ICompilationUnit compilationUnit) {
 		this(compilationUnit, 0, 0, Integer.MAX_VALUE);
@@ -92,6 +96,13 @@ public class JavacCompilationResult extends CompilationResult {
 		this.unusedMembers.addAll(problems);
 	}
 
+	public void addUnusedLocalVariables(List<CategorizedProblem> problems) {
+		if (this.unusedLocalVariables == null) {
+			this.unusedLocalVariables = new ArrayList<>();
+		}
+		this.unusedLocalVariables.addAll(problems);
+	}
+
 	public void addUnnecessaryCasts(List<CategorizedProblem> problems) {
 		if (this.unnecessaryCasts == null) {
 			this.unnecessaryCasts = new ArrayList<>();
@@ -141,8 +152,30 @@ public class JavacCompilationResult extends CompilationResult {
 		this.unqualifiedFieldAccessProblems.addAll(problems);
 	}
 
+	public void addDeadCodeProblems(List<CategorizedProblem> problems) {
+		if (this.deadCodeProblems == null) {
+			this.deadCodeProblems = new ArrayList<>();
+		}
+		this.deadCodeProblems.addAll(problems);
+	}
+
+	public void addRedundantNullAnnotationProblems(List<CategorizedProblem> problems) {
+		if (this.redundantNullAnnotationProblems == null) {
+			this.redundantNullAnnotationProblems = new ArrayList<>();
+		}
+		this.redundantNullAnnotationProblems.addAll(problems);
+	}
+
+	public void addPotentialNullReferenceProblems(List<CategorizedProblem> problems) {
+		if (this.potentialNullReferenceProblems == null) {
+			this.potentialNullReferenceProblems = new ArrayList<>();
+		}
+		this.potentialNullReferenceProblems.addAll(problems);
+	}
+
 	public List<CategorizedProblem> getAdditionalProblems() {
 		if (this.unusedMembers == null
+				&& this.unusedLocalVariables == null
 				&& this.unusedImports == null
 				&& this.unnecessaryCasts == null
 				&& this.noEffectAssignments == null
@@ -150,7 +183,10 @@ public class JavacCompilationResult extends CompilationResult {
 				&& this.unusedTypeParameters == null
 				&& this.accessRestrictionProblems == null
 				&& this.indirectStaticAccessProblems == null
-				&& this.unqualifiedFieldAccessProblems == null) {
+				&& this.unqualifiedFieldAccessProblems == null
+				&& this.deadCodeProblems == null
+				&& this.redundantNullAnnotationProblems == null
+				&& this.potentialNullReferenceProblems == null) {
 			return null;
 		}
 
@@ -160,6 +196,9 @@ public class JavacCompilationResult extends CompilationResult {
 		}
 		if (this.unusedMembers != null) {
 			problems.addAll(this.unusedMembers);
+		}
+		if (this.unusedLocalVariables != null) {
+			problems.addAll(this.unusedLocalVariables);
 		}
 		if (this.unnecessaryCasts != null) {
 			problems.addAll(this.unnecessaryCasts);
@@ -181,6 +220,15 @@ public class JavacCompilationResult extends CompilationResult {
 		}
 		if (this.unqualifiedFieldAccessProblems != null) {
 			problems.addAll(this.unqualifiedFieldAccessProblems);
+		}
+		if (this.deadCodeProblems != null) {
+			problems.addAll(this.deadCodeProblems);
+		}
+		if (this.redundantNullAnnotationProblems != null) {
+			problems.addAll(this.redundantNullAnnotationProblems);
+		}
+		if (this.potentialNullReferenceProblems != null) {
+			problems.addAll(this.potentialNullReferenceProblems);
 		}
 		return problems;
 	}

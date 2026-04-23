@@ -76,20 +76,12 @@ import org.eclipse.jdt.core.search.SearchPattern;
 import org.eclipse.jdt.internal.compiler.CompilationResult;
 import org.eclipse.jdt.internal.compiler.batch.FileSystem.Classpath;
 import org.eclipse.jdt.internal.compiler.classfmt.ClassFileConstants;
-import org.eclipse.jdt.internal.compiler.env.AccessRestriction;
 import org.eclipse.jdt.internal.compiler.env.AccessRuleSet;
-import org.eclipse.jdt.internal.compiler.env.IBinaryType;
 import org.eclipse.jdt.internal.compiler.env.IDependent;
-import org.eclipse.jdt.internal.compiler.env.INameEnvironment;
-import org.eclipse.jdt.internal.compiler.env.ISourceType;
 import org.eclipse.jdt.internal.compiler.impl.CompilerOptions;
-import org.eclipse.jdt.internal.compiler.impl.ITypeRequestor;
 import org.eclipse.jdt.internal.compiler.impl.ReferenceContext;
-import org.eclipse.jdt.internal.compiler.lookup.LookupEnvironment;
-import org.eclipse.jdt.internal.compiler.lookup.PackageBinding;
 import org.eclipse.jdt.internal.compiler.problem.DefaultProblemFactory;
 import org.eclipse.jdt.internal.compiler.util.Util;
-import org.eclipse.jdt.internal.core.CancelableNameEnvironment;
 import org.eclipse.jdt.internal.core.JavaModelManager;
 import org.eclipse.jdt.internal.core.JavaProject;
 import org.eclipse.jdt.internal.core.dom.ICompilationUnitResolver;
@@ -249,11 +241,12 @@ public class JavacCompilationUnitResolver implements ICompilationUnitResolver {
 		try {
 			for (IPackageFragmentRoot root : project.getPackageFragmentRoots()) {
 				if (root.getResource() instanceof IFolder) {
-					IPackageFragment pack = root.getPackageFragment(this.getClass().getName() + ".MOCK_WORKING_COPY_PACKAGE_" + System.nanoTime());
-					ICompilationUnit mockUnit = pack.getCompilationUnit("A.java");
+					long nanoTime = System.nanoTime();
+					IPackageFragment pack = root.getPackageFragment(this.getClass().getName() + ".MOCK_WORKING_COPY_PACKAGE_" + nanoTime);
+					ICompilationUnit mockUnit = pack.getCompilationUnit("MockWorkingCopyClass" + nanoTime + ".java");
 					mockUnit.becomeWorkingCopy(monitor);
 					mockUnit.getBuffer().setContents("package " + pack.getElementName() + ";\n" +
-							"class A{}");
+							"class MockWorkingCopyClass" + nanoTime + "{}");
 					return mockUnit;
 				}
 			}
@@ -267,54 +260,53 @@ public class JavacCompilationUnitResolver implements ICompilationUnitResolver {
 	public void resolve(ICompilationUnit[] compilationUnits, String[] bindingKeys, ASTRequestor requestor, int apiLevel,
 			Map<String, String> compilerOptions, IJavaProject project, WorkingCopyOwner workingCopyOwner, int flags,
 			IProgressMonitor monitor) {
-		ICompilationUnit mockUnit = compilationUnits.length == 0 && bindingKeys.length > 0 ? createMockUnit(project, monitor) : null;
+		// source additional units from keys
+		List<ICompilationUnit> additionalUnits = new ArrayList<>();
+		for (int i = 0; i < bindingKeys.length; i++) {
+			CustomBindingKeyParser bkp = new CustomBindingKeyParser(bindingKeys[i]);
+			bkp.parse(true);
+			int lastDot = bkp.compoundName.lastIndexOf('.');
+			String packageName = lastDot == -1 ? "" : bkp.compoundName.substring(0, lastDot);
+			String simpleName = lastDot == -1 ? bkp.compoundName : bkp.compoundName.substring(lastDot + 1);
+			// find package
+			try {
+				for (IPackageFragmentRoot root : project.getPackageFragmentRoots()) {
+					if (root.getResource() instanceof IFolder) {
+						IPackageFragment pack = root.getPackageFragment(packageName);
+						ICompilationUnit a = pack.getCompilationUnit(simpleName + ".java");
+						if (a.exists()) {
+							additionalUnits.add(a);
+							break;
+						}
+					}
+				}
+			} catch (JavaModelException e) {
+				// TODO Auto-generated catch block
+				e.printStackTrace();
+			}
+		}
+
+		ICompilationUnit mockUnit = compilationUnits.length == 0 && additionalUnits.size() == 0 && bindingKeys.length > 0 ? createMockUnit(project, monitor) : null;
 		if (mockUnit != null) {
 			// if we're looking for a key in a binary type and have no actual unit,
 			// create a mock to activate some compilation task, enable a bindingResolver
 			// and then allow looking up the binary types too
 			compilationUnits = new ICompilationUnit[] { mockUnit };
 		}
-		Map<ICompilationUnit, CompilationUnit> units = parse(compilationUnits, apiLevel, compilerOptions, true, flags, workingCopyOwner, monitor);
+
+		ICompilationUnit[] combinedUnits = new ICompilationUnit[compilationUnits.length + additionalUnits.size()];
+		System.arraycopy(compilationUnits, 0, combinedUnits, 0, compilationUnits.length);
+		for (int i = compilationUnits.length; i < combinedUnits.length; i++) {
+			combinedUnits[i] = additionalUnits.removeFirst();
+		}
+
+		Map<ICompilationUnit, CompilationUnit> units = parse(combinedUnits, apiLevel, compilerOptions, true, flags, workingCopyOwner, monitor);
 		if (requestor != null) {
 			final JavacBindingResolver[] bindingResolver = new JavacBindingResolver[1];
 			bindingResolver[0] = null;
 
 			final Map<String, IBinding> bindingMap = new HashMap<>();
-			{
-				INameEnvironment environment = null;
-				if (project instanceof JavaProject javaProject) {
-					try {
-						environment = new CancelableNameEnvironment(javaProject, workingCopyOwner, monitor);
-					} catch (JavaModelException e) {
-						// fall through
-					}
-				}
-				if (environment == null) {
-					environment = new NameEnvironmentWithProgress(new Classpath[0], null, monitor);
-				}
-				LookupEnvironment lu = new LookupEnvironment(new ITypeRequestor() {
-
-					@Override
-					public void accept(IBinaryType binaryType, PackageBinding packageBinding,
-							AccessRestriction accessRestriction) {
-						// do nothing
-					}
-
-					@Override
-					public void accept(org.eclipse.jdt.internal.compiler.env.ICompilationUnit unit,
-							AccessRestriction accessRestriction) {
-						// do nothing
-					}
-
-					@Override
-					public void accept(ISourceType[] sourceType, PackageBinding packageBinding,
-							AccessRestriction accessRestriction) {
-						// do nothing
-					}
-
-				}, new CompilerOptions(compilerOptions), null, environment);
-				requestor.additionalBindingResolver = javacAdditionalBindingCreator(bindingMap, environment, lu, bindingResolver);
-			}
+			requestor.additionalBindingResolver = javacAdditionalBindingCreator(bindingMap, bindingResolver);
 
 			units.forEach((a,b) -> {
 				if (bindingResolver[0] == null && b.ast.getBindingResolver() instanceof JavacBindingResolver javacBindingResolver) {
@@ -357,18 +349,6 @@ public class JavacCompilationUnitResolver implements ICompilationUnitResolver {
 
 		for (CompilationUnit cu : units) {
 			cu.accept(new BindingBuilder(bindingMap));
-		}
-
-		INameEnvironment environment = null;
-		if (project instanceof JavaProject javaProject) {
-			try {
-				environment = new CancelableNameEnvironment(javaProject, null, monitor);
-			} catch (JavaModelException e) {
-				// do nothing
-			}
-		}
-		if (environment == null) {
-			environment = new NameEnvironmentWithProgress(cp, null, monitor);
 		}
 
 		// resolve the requested bindings
@@ -1574,7 +1554,7 @@ public class JavacCompilationUnitResolver implements ICompilationUnitResolver {
 		}
 	}
 
-	private static Function<String, IBinding> javacAdditionalBindingCreator(Map<String, IBinding> bindingMap, INameEnvironment environment, LookupEnvironment lu, BindingResolver[] bindingResolverPointer) {
+	private static Function<String, IBinding> javacAdditionalBindingCreator(Map<String, IBinding> bindingMap, BindingResolver[] bindingResolverPointer) {
 
 		return key -> {
 

@@ -17,18 +17,17 @@ import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
 
+import javax.lang.model.element.TypeElement;
+
 import org.eclipse.jdt.core.compiler.CategorizedProblem;
 import org.eclipse.jdt.core.compiler.IProblem;
 import org.eclipse.jdt.internal.compiler.IProblemFactory;
 import org.eclipse.jdt.internal.compiler.impl.CompilerOptions;
-import org.eclipse.jdt.internal.compiler.problem.ProblemReporter;
-import org.eclipse.jdt.internal.compiler.problem.ProblemSeverities;
 
 import com.sun.source.tree.ClassTree;
 import com.sun.source.tree.CompilationUnitTree;
 import com.sun.source.tree.IdentifierTree;
 import com.sun.source.tree.MemberSelectTree;
-import com.sun.source.util.TreeScanner;
 import com.sun.tools.javac.code.Symbol.ClassSymbol;
 import com.sun.tools.javac.code.Symbol.MethodSymbol;
 import com.sun.tools.javac.code.Symbol.PackageSymbol;
@@ -40,7 +39,7 @@ import com.sun.tools.javac.tree.JCTree.JCFieldAccess;
 import com.sun.tools.javac.tree.JCTree.JCIdent;
 import com.sun.tools.javac.util.Context;
 
-public class CodeStyleTreeScanner extends TreeScanner<Void, Void> {
+public class CodeStyleTreeScanner extends TopLevelTreeScanner<Void, Void> {
 
 	private final IProblemFactory problemFactory;
 	private final CompilerOptions compilerOptions;
@@ -52,7 +51,8 @@ public class CodeStyleTreeScanner extends TreeScanner<Void, Void> {
 
 	private JCCompilationUnit unit = null;
 
-	CodeStyleTreeScanner(Context context, IProblemFactory problemFactory, CompilerOptions compilerOptions) {
+	CodeStyleTreeScanner(Context context, IProblemFactory problemFactory, CompilerOptions compilerOptions, TypeElement currentTopLevelType) {
+		super(currentTopLevelType);
 		this.problemFactory = problemFactory;
 		this.compilerOptions = compilerOptions;
 		this.types = Types.instance(context);
@@ -113,8 +113,7 @@ public class CodeStyleTreeScanner extends TreeScanner<Void, Void> {
 						fieldAccess,
 						IProblem.IndirectAccessToStaticField,
 						new String[] { declaringTypeName, fieldName },
-						new String[] { shortDeclaringTypeName, fieldName },
-						toSeverity(IProblem.IndirectAccessToStaticField));
+						new String[] { shortDeclaringTypeName, fieldName });
 				this.indirectStaticAccessProblems.add(problem);
 			} else if (fieldAccess.sym instanceof MethodSymbol method) {
 				String parameters = getParameterTypes(method);
@@ -125,8 +124,7 @@ public class CodeStyleTreeScanner extends TreeScanner<Void, Void> {
 						fieldAccess,
 						IProblem.IndirectAccessToStaticMethod,
 						new String[] { declaringTypeName, methodName, parameters },
-						new String[] { shortDeclaringTypeName, methodName, parameters },
-						toSeverity(IProblem.IndirectAccessToStaticMethod));
+						new String[] { shortDeclaringTypeName, methodName, parameters });
 				this.indirectStaticAccessProblems.add(problem);
 			}
 		}
@@ -146,8 +144,7 @@ public class CodeStyleTreeScanner extends TreeScanner<Void, Void> {
 					ident,
 					IProblem.UnqualifiedFieldAccess,
 					new String[] { declaringTypeName, fieldName },
-					new String[] { shortDeclaringTypeName, fieldName },
-					toSeverity(IProblem.UnqualifiedFieldAccess));
+					new String[] { shortDeclaringTypeName, fieldName });
 			this.unqualifiedFieldAccessProblems.add(problem);
 		}
 	}
@@ -160,7 +157,7 @@ public class CodeStyleTreeScanner extends TreeScanner<Void, Void> {
 		return this.unqualifiedFieldAccessProblems;
 	}
 
-	private CategorizedProblem toCategorizedProblem(JCFieldAccess fieldAccess, int problemId, String[] problemArguments, String[] messageArguments, int severity) {
+	private CategorizedProblem toCategorizedProblem(JCFieldAccess fieldAccess, int problemId, String[] problemArguments, String[] messageArguments) {
 		char[] fileName = this.unit.getSourceFile().getName().toCharArray();
 		int startPos = fieldAccess.selected.getEndPosition(this.unit.endPositions) + 1;
 		int endPos = startPos + fieldAccess.name.length() - 1;
@@ -170,10 +167,12 @@ public class CodeStyleTreeScanner extends TreeScanner<Void, Void> {
 					problemId,
 					problemArguments,
 					messageArguments,
-					severity, startPos, endPos, line, column);
+					JavacUtils.toSeverity(this.compilerOptions, problemId),
+					startPos, endPos,
+					line, column);
 	}
 
-	private CategorizedProblem toCategorizedProblem(JCIdent ident, int problemId, String[] problemArguments, String[] messageArguments, int severity) {
+	private CategorizedProblem toCategorizedProblem(JCIdent ident, int problemId, String[] problemArguments, String[] messageArguments) {
 		char[] fileName = this.unit.getSourceFile().getName().toCharArray();
 		int startPos = ident.getStartPosition();
 		int endPos = startPos + ident.name.length() - 1;
@@ -183,7 +182,9 @@ public class CodeStyleTreeScanner extends TreeScanner<Void, Void> {
 				problemId,
 				problemArguments,
 				messageArguments,
-				severity, startPos, endPos, line, column);
+				JavacUtils.toSeverity(this.compilerOptions, problemId),
+				startPos, endPos,
+				line, column);
 	}
 
 	private String getParameterTypes(MethodSymbol method) {
@@ -195,16 +196,5 @@ public class CodeStyleTreeScanner extends TreeScanner<Void, Void> {
 			result.append(parameter.type.toString());
 		}
 		return result.toString();
-	}
-
-	private int toSeverity(int jdtProblemId) {
-		int irritant = ProblemReporter.getIrritant(jdtProblemId);
-		if (irritant != 0) {
-			int res = this.compilerOptions.getSeverity(irritant);
-			res &= ~ProblemSeverities.Optional; // reject optional flag at this stage
-			return res;
-		}
-
-		return ProblemSeverities.Warning;
 	}
 }

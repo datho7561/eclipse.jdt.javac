@@ -1,21 +1,31 @@
 package org.eclipse.jdt.internal.javac.problem;
 
+import java.util.Arrays;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
+import org.eclipse.jdt.core.compiler.IProblem;
 import org.eclipse.jdt.core.dom.ASTNode;
 import org.eclipse.jdt.core.dom.ASTVisitor;
-import org.eclipse.jdt.core.dom.Assignment;
 import org.eclipse.jdt.core.dom.ClassInstanceCreation;
+import org.eclipse.jdt.core.dom.CompilationUnit;
+import org.eclipse.jdt.core.dom.Expression;
+import org.eclipse.jdt.core.dom.IBinding;
 import org.eclipse.jdt.core.dom.IMethodBinding;
 import org.eclipse.jdt.core.dom.ITypeBinding;
+import org.eclipse.jdt.core.dom.IVariableBinding;
 import org.eclipse.jdt.core.dom.JavacBindingResolver;
 import org.eclipse.jdt.core.dom.JdtCoreDomPackagePrivateUtility;
 import org.eclipse.jdt.core.dom.MarkerAnnotation;
 import org.eclipse.jdt.core.dom.MethodDeclaration;
 import org.eclipse.jdt.core.dom.ParameterizedType;
+import org.eclipse.jdt.core.dom.SimpleName;
+import org.eclipse.jdt.core.dom.SwitchCase;
+import org.eclipse.jdt.core.dom.SwitchStatement;
 import org.eclipse.jdt.core.dom.Type;
 import org.eclipse.jdt.core.dom.VariableDeclarationFragment;
 import org.eclipse.jdt.core.dom.VariableDeclarationStatement;
@@ -27,11 +37,21 @@ import org.eclipse.jdt.internal.javac.dom.JavacTypeBinding;
 
 public class JavacProblemDiscovery extends ASTVisitor {
 	private JavacProblemReporter reporter = null;
+	private CompilationUnit currentCU = null;
 	public JavacProblemDiscovery(Map<String, String> compilerOptions, ReferenceContext referenceContext) {
 		reporter = new JavacProblemReporter(DefaultErrorHandlingPolicies.proceedWithAllProblems(),
 				new CompilerOptions(compilerOptions),
 				new DefaultProblemFactory(Locale.getDefault()), referenceContext);
 	}
+
+
+
+	@Override
+	public boolean visit(CompilationUnit cu) {
+		currentCU = cu;
+		return true;
+	}
+
 	@Override
 	public boolean visit(ParameterizedType node) {
 		ASTNode parent = node.getParent();
@@ -63,11 +83,20 @@ public class JavacProblemDiscovery extends ASTVisitor {
 	}
 
 	@Override
-	public boolean visit(Assignment node) {
-		// TODO
-//		if( node.getOperator() == Assignment.Operator.ASSIGN ) {
-//			return true;
-//		}
+	public boolean visit(VariableDeclarationFragment frag) {
+		int fragStart = frag.getStartPosition();
+		IProblem match = Arrays.asList(currentCU.getProblems()).stream()
+				.filter(x -> x.getID() == IProblem.UninitializedLocalVariable && x.getSourceStart() == fragStart).findFirst().orElse(null);
+		if( match != null ) {
+			if( frag.getInitializer() != null && frag.getInitializer() instanceof SimpleName sn) {
+				SimpleName lhs = frag.getName();
+				IBinding lhsBinding = lhs.resolveBinding();
+				IBinding rhsBinding = sn.resolveBinding();
+				if( lhsBinding == rhsBinding) {
+					reporter.assignmentHasNoEffect(frag, lhs.getIdentifier().toCharArray());
+				}
+			}
+		}
 		return true;
 	}
 
@@ -159,5 +188,73 @@ public class JavacProblemDiscovery extends ASTVisitor {
 			}
 		}
 		return false;
+	}
+
+	@Override
+	public boolean visit(SwitchStatement node) {
+	    if (node.getExpression() == null) {
+	        return true;
+	    }
+
+	    ITypeBinding typeBinding = node.getExpression().resolveTypeBinding();
+	    if (typeBinding == null || !typeBinding.isEnum()) {
+	        return true;
+	    }
+
+	    Set<String> enumConstants = new LinkedHashSet<>();
+	    for (IVariableBinding field : typeBinding.getDeclaredFields()) {
+	        if (field.isEnumConstant()) {
+	            enumConstants.add(field.getName());
+	        }
+	    }
+
+	    Set<String> handledConstants = new LinkedHashSet<>();
+	    boolean hasDefault = false;
+	    boolean hasInvalidCaseLabel = false;
+
+	    for (Object stmtObj : node.statements()) {
+	        if (stmtObj instanceof SwitchCase sc) {
+	            if (sc.isDefault()) {
+	                hasDefault = true;
+	                continue;
+	            }
+
+	            @SuppressWarnings("unchecked")
+	            List<Expression> expressions = sc.expressions();
+
+	            for (Expression caseExpr : expressions) {
+	                if (!(caseExpr instanceof SimpleName simpleName)) {
+	                    hasInvalidCaseLabel = true;
+	                    continue;
+	                }
+
+	                IBinding b = simpleName.resolveBinding();
+	                if (!(b instanceof IVariableBinding vb) || !vb.isEnumConstant()) {
+	                    hasInvalidCaseLabel = true;
+	                    continue;
+	                }
+
+	                ITypeBinding declaringType = vb.getDeclaringClass();
+	                if (declaringType == null || !declaringType.isEqualTo(typeBinding)) {
+	                    hasInvalidCaseLabel = true;
+	                    continue;
+	                }
+
+	                handledConstants.add(vb.getName());
+	            }
+	        }
+	    }
+
+	    Set<String> missing = new LinkedHashSet<>(enumConstants);
+	    missing.removeAll(handledConstants);
+
+	    if (!missing.isEmpty() && !hasDefault && !hasInvalidCaseLabel) {
+	        String enumTypeName = typeBinding.getName();
+	        for (String missingConstant : missing) {
+	            reporter.missingEnumConstantInSwitch(node, enumTypeName, missingConstant);
+	        }
+	    }
+
+	    return true;
 	}
 }

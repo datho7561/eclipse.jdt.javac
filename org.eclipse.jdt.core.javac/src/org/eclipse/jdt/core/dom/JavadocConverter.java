@@ -10,7 +10,6 @@
  *******************************************************************************/
 package org.eclipse.jdt.core.dom;
 
-import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -23,7 +22,11 @@ import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 import org.eclipse.core.runtime.ILog;
+import org.eclipse.jdt.internal.javac.javadoc.JavacJdtMarkupParser;
+import org.eclipse.jdt.internal.javac.javadoc.JavacJdtMarkupTag;
+import org.eclipse.jdt.internal.javac.javadoc.JavacJdtMarkupTagAttribute;
 
+import com.sun.source.doctree.DocTree;
 import com.sun.source.doctree.DocTree.Kind;
 import com.sun.source.util.DocTreePath;
 import com.sun.source.util.TreePath;
@@ -65,9 +68,6 @@ import com.sun.tools.javac.tree.JCTree.JCArrayTypeTree;
 import com.sun.tools.javac.tree.TreeScanner;
 import com.sun.tools.javac.util.Convert;
 import com.sun.tools.javac.util.JCDiagnostic;
-
-import jdk.javadoc.internal.doclets.formats.html.taglets.snippet.Attribute;
-import jdk.javadoc.internal.doclets.formats.html.taglets.snippet.MarkupParser;
 
 class JavadocConverter {
 
@@ -112,10 +112,11 @@ class JavadocConverter {
 		if (javac != null) {
 			int startPosition = this.docComment.getSourcePosition(javac.getStartPosition());
 			int endPosition = this.docComment.getSourcePosition(javac.getEndPosition());
-			int length = endPosition - startPosition;
-//			if (res instanceof TextElement) {
-//				length++;
-//			}
+			// Trim trailing whitespace (this removes the newline case)
+			while (endPosition > startPosition && Character.isWhitespace(this.javacConverter.rawText.charAt(endPosition))) {
+				endPosition--;
+			}
+			int length = endPosition - startPosition + 1;
 			if (startPosition >= 0 && length >= 0) {
 				res.setSourceRange(startPosition, length);
 			}
@@ -319,12 +320,18 @@ class JavadocConverter {
 			});
 			res.fragments().addAll(convertElement(literal.body).toList());
 		} else if (javac instanceof DCLink link) {
-			res.setTagName(this.docComment.comment.getStyle() == CommentStyle.JAVADOC_LINE ? TagElement.TAG_LINK :
-				switch (link.getKind()) {
-					case LINK -> TagElement.TAG_LINK;
-					case LINK_PLAIN -> TagElement.TAG_LINKPLAIN;
-					default -> TagElement.TAG_LINK;
-				});
+			boolean cs1 = this.docComment.comment.getStyle() == CommentStyle.JAVADOC_LINE;
+			boolean cs2 = link.getKind() == DocTree.Kind.LINK_PLAIN;
+			if( cs1 && cs2 ) {
+				res.setTagName(TagElement.TAG_LINKPLAIN);
+			} else {
+				res.setTagName(this.docComment.comment.getStyle() == CommentStyle.JAVADOC_LINE ? TagElement.TAG_LINK :
+						switch (link.getKind()) {
+							case LINK -> TagElement.TAG_LINK;
+							case LINK_PLAIN -> TagElement.TAG_LINKPLAIN;
+							default -> TagElement.TAG_LINK;
+						});
+			}
 			if (link.label != null && !link.label.isEmpty() && link.ref != null && link.label.getFirst().getStartPosition() < link.ref.getStartPosition()) {
 				// markdown style
 				link.label.stream().flatMap(this::convertElement).forEach(res.fragments()::add);
@@ -505,9 +512,9 @@ class JavadocConverter {
 		}
 		int markupStart = markedUpLine.start("markup");
 		String markup = line.substring(markupStart);
-		MarkupParser markupParser = new MarkupParser(null);
+		JavacJdtMarkupParser markupParser = new JavacJdtMarkupParser();
 		try {
-			List<?> tags = markupParser.parse(markup);
+			List<JavacJdtMarkupTag> tags = markupParser.parse(markup);
 			if (tags.isEmpty()) {
 				return defaultElement;
 			}
@@ -515,14 +522,9 @@ class JavadocConverter {
 			initialTextElement.setSourceRange(region.startOffset, markupStart - 2 /* 2 is length of `//` */);
 			initialTextElement.setText(line.substring(0, markupStart - 2) + '\n');
 			IDocElement currentElement = initialTextElement;
-			Class<? extends Object> tagClass = tags.getFirst().getClass();
-			Field nameField = tagClass.getDeclaredField("name"); //$NON-NLS-1$
-			nameField.setAccessible(true);
-			Field attributesFields = tagClass.getDeclaredField("attributes"); //$NON-NLS-1$
-			attributesFields.setAccessible(true);
-			for (Object tag : tags) {
-				String name = (String)nameField.get(tag);
-				List<Attribute> attributes = (List<Attribute>)attributesFields.get(tag);
+			for (JavacJdtMarkupTag tag : tags) {
+				String name = tag.name();
+				List<JavacJdtMarkupTagAttribute> attributes = tag.attributes();
 				TagElement newElement = this.ast.newTagElement();
 				newElement.setSourceRange(region.startOffset, region.length);
 				newElement.setTagName('@' + name);
@@ -537,15 +539,11 @@ class JavadocConverter {
 		}
 		return defaultElement;
 	}
-	private TagProperty toTagProperty(Attribute snippetMarkupAttribute) {
+	private TagProperty toTagProperty(JavacJdtMarkupTagAttribute snippetMarkupAttribute) {
 		TagProperty res = this.ast.newTagProperty();
 		try {
-			Field name = Attribute.class.getDeclaredField("name"); //$NON-NLS-1$
-			name.setAccessible(true);
-			res.setName((String)name.get(snippetMarkupAttribute));
-			Field value = snippetMarkupAttribute.getClass().getDeclaredField("value"); //$NON-NLS-1$
-			value.setAccessible(true);
-			res.setStringValue((String)value.get(snippetMarkupAttribute));
+			res.setName(snippetMarkupAttribute.name());
+			res.setStringValue(snippetMarkupAttribute.value());
 		} catch (Exception ex) {
 			ILog.get().error(ex.getMessage(), ex);
 		}
